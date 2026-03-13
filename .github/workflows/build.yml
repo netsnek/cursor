@@ -1,0 +1,92 @@
+name: Build Cursor ARM64 RPM
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1' # Weekly Monday 06:00 UTC
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check latest Cursor version
+        id: version
+        run: |
+          VERSION=$(curl -sD - -o /dev/null \
+            "https://dl.todesktop.com/230313mzl4w4u92/linux/appImage/x64" \
+            | grep -i content-disposition \
+            | sed 's/.*cursor-\(.*\)x86_64.AppImage.*/\1/')
+          echo "cursor_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Latest Cursor version: $VERSION"
+
+      - name: Check if already built
+        id: check
+        run: |
+          VERSION="${{ steps.version.outputs.cursor_version }}"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Version $VERSION already released, skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "New version $VERSION, building."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools rpm createrepo-c
+
+      - name: Build Cursor ARM64
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          chmod +x build-cursor-arm64.sh
+          ./build-cursor-arm64.sh
+
+      - name: Build RPM
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          chmod +x build-rpm.sh
+          ./build-rpm.sh
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.cursor_version }}"
+          RPM_PATH=$(cat /tmp/cursor-build/out/rpm-path.txt)
+          gh release create "v$VERSION" "$RPM_PATH" \
+            --title "Cursor $VERSION ARM64" \
+            --notes "Cursor $VERSION — unofficial native ARM64 RPM build for Fedora/Asahi Linux."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Cloudflare R2
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.cursor_version }}"
+          RPM_PATH=$(cat /tmp/cursor-build/out/rpm-path.txt)
+          RPM_NAME=$(basename "$RPM_PATH")
+
+          # Download existing repodata and RPMs list
+          mkdir -p /tmp/netsnek-repo
+          cp "$RPM_PATH" /tmp/netsnek-repo/
+
+          # Generate repodata
+          createrepo_c /tmp/netsnek-repo/
+
+          # Upload RPM
+          npx wrangler r2 object put "netsnek-rpm/$RPM_NAME" \
+            --file="$RPM_PATH" --remote
+
+          # Upload repodata
+          for f in /tmp/netsnek-repo/repodata/*; do
+            npx wrangler r2 object put "netsnek-rpm/repodata/$(basename "$f")" \
+              --file="$f" --remote
+          done
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

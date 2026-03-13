@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Cursor
+Comment=Cursor AI Code Editor
+Exec=/opt/cursor/bin/cursor --no-sandbox --ozone-platform=wayland %F
+Icon=cursor
+Type=Application
+Categories=Development;IDE;
+MimeType=text/plain;inode/directory;
+StartupNotify=true
+StartupWMClass=Cursor
