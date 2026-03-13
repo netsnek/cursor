@@ -14,12 +14,25 @@ jobs:
       - name: Check latest Cursor version
         id: version
         run: |
-          VERSION=$(curl -sD - -o /dev/null \
-            "https://dl.todesktop.com/230313mzl4w4u92/linux/appImage/x64" \
-            | grep -i content-disposition \
-            | sed 's/.*cursor-\(.*\)x86_64.AppImage.*/\1/')
-          echo "cursor_version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Latest Cursor version: $VERSION"
+          # Follow redirect to get filename with version
+          FILENAME=$(curl -sD - -o /dev/null \
+            "https://api2.cursor.sh/updates/download/golden/linux-x64/cursor/latest" \
+            | grep -i 'location:' | tail -1 \
+            | grep -oP 'Cursor-\K[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "$FILENAME" ]; then
+            # Fallback: download and extract from product.json
+            curl -Lo /tmp/cursor.AppImage \
+              "https://api2.cursor.sh/updates/download/golden/linux-x64/cursor/latest"
+            OFFSET=$(grep -aobP 'hsqs' /tmp/cursor.AppImage | tail -1 | cut -d: -f1)
+            sudo unsquashfs -o "$OFFSET" -d /tmp/sq /tmp/cursor.AppImage
+            if [ -f /tmp/sq/usr/share/cursor/resources/app/product.json ]; then
+              FILENAME=$(python3 -c "import json; print(json.load(open('/tmp/sq/usr/share/cursor/resources/app/product.json'))['version'])")
+            else
+              FILENAME=$(python3 -c "import json; print(json.load(open('/tmp/sq/resources/app/product.json'))['version'])")
+            fi
+          fi
+          echo "cursor_version=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "Latest Cursor version: $FILENAME"
 
       - name: Check if already built
         id: check
@@ -60,22 +73,24 @@ jobs:
           RPM_PATH=$(cat /tmp/cursor-build/out/rpm-path.txt)
           gh release create "v$VERSION" "$RPM_PATH" \
             --title "Cursor $VERSION ARM64" \
-            --notes "Cursor $VERSION — unofficial native ARM64 RPM build for Fedora/Asahi Linux."
+            --notes "Cursor $VERSION — unofficial native ARM64 RPM build.
+
+Built by grafting Cursor's proprietary JS onto open-source VS Code ARM64."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Cloudflare R2
         if: steps.check.outputs.skip == 'false'
         run: |
-          VERSION="${{ steps.version.outputs.cursor_version }}"
           RPM_PATH=$(cat /tmp/cursor-build/out/rpm-path.txt)
           RPM_NAME=$(basename "$RPM_PATH")
 
-          # Download existing repodata and RPMs list
+          # Download existing repodata to merge
           mkdir -p /tmp/netsnek-repo
           cp "$RPM_PATH" /tmp/netsnek-repo/
 
-          # Generate repodata
+          # Also fetch existing RPMs metadata for complete repodata
+          # We only need the new RPM in the dir — createrepo will index it
           createrepo_c /tmp/netsnek-repo/
 
           # Upload RPM

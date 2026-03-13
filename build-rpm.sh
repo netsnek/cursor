@@ -11,6 +11,7 @@ CURSOR_VERSION=$(cat "$WORKDIR/out/version.txt")
 echo "==> Building RPM for Cursor $CURSOR_VERSION"
 
 # Setup rpmbuild tree
+rm -rf "$RPMDIR"
 mkdir -p "$RPMDIR"/{BUILD,RPMS,SPECS,SOURCES/staging/{opt/cursor,usr/bin,usr/share/applications,usr/share/pixmaps},SRPMS,BUILDROOT}
 
 # Copy built cursor
@@ -19,7 +20,7 @@ cp -a "$WORKDIR/vscode-arm64/." "$RPMDIR/SOURCES/staging/opt/cursor/"
 # Symlink, desktop entry, icon
 ln -sf /opt/cursor/bin/cursor "$RPMDIR/SOURCES/staging/usr/bin/cursor"
 cp "$SCRIPTDIR/cursor.desktop" "$RPMDIR/SOURCES/staging/usr/share/applications/"
-cp "$WORKDIR/squashfs-root/cursor.png" "$RPMDIR/SOURCES/staging/usr/share/pixmaps/cursor.png"
+cp "$WORKDIR/out/cursor.png" "$RPMDIR/SOURCES/staging/usr/share/pixmaps/cursor.png"
 
 # Copy spec
 cp "$SCRIPTDIR/cursor.spec" "$RPMDIR/SPECS/"
