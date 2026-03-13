@@ -1,12 +1,10 @@
 #!/bin/bash
 # Build Cursor ARM64 by grafting Cursor's JS resources onto VS Code ARM64.
 # Cursor is a closed-source VS Code fork — all proprietary code is JS (arch-independent).
-# Native binaries (Electron, Node) come from the open-source VS Code ARM64 build.
+# Native binaries (Electron, Node, .node modules) come from the open-source VS Code ARM64.
 #
-# Cursor 2.x changed its AppImage structure:
-#   Old (0.x): squashfs-root/resources/app/...
-#   New (2.x): squashfs-root/usr/share/cursor/resources/app/...
-# This script handles both layouts.
+# IMPORTANT: Cursor's node_modules contain x86 native .node files. After copying,
+# we overwrite them with VS Code ARM64's native modules (same ABI, same versions).
 set -euo pipefail
 
 WORKDIR="${WORKDIR:-/tmp/cursor-build}"
@@ -27,6 +25,8 @@ OFFSET=$(grep -aobP 'hsqs' cursor-x86.AppImage | tail -1 | cut -d: -f1)
 unsquashfs -o "$OFFSET" -d squashfs-root cursor-x86.AppImage
 
 # 3. Detect app root (handles both old and new AppImage layouts)
+#    Old (0.x): squashfs-root/resources/app/...
+#    New (2.x): squashfs-root/usr/share/cursor/resources/app/...
 if [ -f "squashfs-root/usr/share/cursor/resources/app/product.json" ]; then
   APP_ROOT="squashfs-root/usr/share/cursor"
 elif [ -f "squashfs-root/resources/app/product.json" ]; then
@@ -47,9 +47,11 @@ echo "$CURSOR_VERSION" > "$OUTDIR/version.txt"
 echo "==> Downloading VS Code ARM64 $VSCODE_VERSION..."
 curl -Lo vscode-arm64.tar.gz \
   "https://update.code.visualstudio.com/${VSCODE_VERSION}/linux-arm64/stable"
-rm -rf vscode-arm64
-mkdir vscode-arm64
-tar xzf vscode-arm64.tar.gz -C vscode-arm64 --strip-components=1
+rm -rf vscode-arm64 vscode-arm64-clean
+mkdir vscode-arm64-clean
+tar xzf vscode-arm64.tar.gz -C vscode-arm64-clean --strip-components=1
+# Keep a clean copy for native module extraction
+cp -a vscode-arm64-clean vscode-arm64
 
 # 6. Graft Cursor's proprietary JS onto VS Code ARM64
 echo "==> Grafting Cursor onto VS Code ARM64..."
@@ -67,26 +69,67 @@ for ext in "$APP_ROOT/resources/app/extensions/cursor-"* "$APP_ROOT/resources/ap
   [ -e "$ext" ] && cp -R "$ext" vscode-arm64/resources/app/extensions/
 done
 
-# Node modules (both dir and asar may exist in 2.x)
-rm -rf vscode-arm64/resources/app/node_modules vscode-arm64/resources/app/node_modules.asar
-[ -d "$APP_ROOT/resources/app/node_modules" ] && \
-  cp -R "$APP_ROOT/resources/app/node_modules" vscode-arm64/resources/app/
-[ -f "$APP_ROOT/resources/app/node_modules.asar" ] && \
-  cp "$APP_ROOT/resources/app/node_modules.asar" vscode-arm64/resources/app/
-
 # App resources (icons, etc.)
 rm -rf vscode-arm64/resources/app/resources
 cp -R "$APP_ROOT/resources/app/resources" vscode-arm64/resources/app/
 
-# 7. Rename binary: code → cursor
+# 7. Handle node_modules: copy Cursor's JS, then fix native modules
+echo "==> Copying Cursor node_modules (JS code)..."
+rm -rf vscode-arm64/resources/app/node_modules
+cp -R "$APP_ROOT/resources/app/node_modules" vscode-arm64/resources/app/
+
+# Copy node_modules.asar if present
+[ -f "$APP_ROOT/resources/app/node_modules.asar" ] && \
+  cp "$APP_ROOT/resources/app/node_modules.asar" vscode-arm64/resources/app/
+
+# Restore node_modules.asar.unpacked from VS Code ARM64
+rm -rf vscode-arm64/resources/app/node_modules.asar.unpacked
+[ -d "vscode-arm64-clean/resources/app/node_modules.asar.unpacked" ] && \
+  cp -R "vscode-arm64-clean/resources/app/node_modules.asar.unpacked" vscode-arm64/resources/app/
+
+# 8. Replace x86 native .node modules with ARM64 from VS Code
+echo "==> Replacing x86 native modules with ARM64..."
+find vscode-arm64-clean/resources/app/node_modules -name "*.node" -type f | while read arm64_file; do
+  relpath="${arm64_file#vscode-arm64-clean/resources/app/node_modules/}"
+  target="vscode-arm64/resources/app/node_modules/$relpath"
+  if [ -f "$target" ]; then
+    cp "$arm64_file" "$target"
+    echo "  replaced: $relpath"
+  fi
+done
+
+# Handle Cursor-only native modules:
+# @anysphere/policy-watcher → same as @vscode/policy-watcher
+VSCODE_PW="vscode-arm64-clean/resources/app/node_modules/@vscode/policy-watcher/build/Release/vscode-policy-watcher.node"
+CURSOR_PW="vscode-arm64/resources/app/node_modules/@anysphere/policy-watcher/build/Release/vscode-policy-watcher.node"
+if [ -f "$VSCODE_PW" ] && [ -f "$CURSOR_PW" ]; then
+  cp "$VSCODE_PW" "$CURSOR_PW"
+  echo "  replaced: @anysphere/policy-watcher (from @vscode/policy-watcher)"
+fi
+
+# cursor-proclist — x86-only, non-critical, remove
+PROCLIST="vscode-arm64/resources/app/node_modules/cursor-proclist/build/Release/cursor_proclist.node"
+[ -f "$PROCLIST" ] && rm "$PROCLIST" && echo "  removed: cursor-proclist (x86-only, non-critical)"
+
+# 9. Verify no x86 .node files remain in node_modules
+echo "==> Verifying architecture..."
+X86_COUNT=$(find vscode-arm64/resources/app/node_modules -name "*.node" -type f -exec file {} \; | grep -c "x86-64" || true)
+if [ "$X86_COUNT" -gt 0 ]; then
+  echo "WARNING: $X86_COUNT x86-64 native modules still present:"
+  find vscode-arm64/resources/app/node_modules -name "*.node" -type f -exec file {} \; | grep "x86-64"
+else
+  echo "  All clean — ARM64 only!"
+fi
+
+# 10. Rename binary: code → cursor
 echo "==> Renaming binary..."
 mv vscode-arm64/code vscode-arm64/cursor 2>/dev/null || true
 mv vscode-arm64/bin/code vscode-arm64/bin/cursor 2>/dev/null || true
 sed -i 's|ELECTRON="$VSCODE_PATH/code"|ELECTRON="$VSCODE_PATH/cursor"|' vscode-arm64/bin/cursor
 
-# 8. Extract icon
+# 11. Extract icon
 ICON=""
-for candidate in "$APP_ROOT/../co.anysphere.cursor.png" "squashfs-root/co.anysphere.cursor.png" "squashfs-root/cursor.png"; do
+for candidate in "squashfs-root/co.anysphere.cursor.png" "squashfs-root/cursor.png"; do
   [ -f "$candidate" ] && ICON="$candidate" && break
 done
 [ -n "$ICON" ] && cp "$ICON" "$OUTDIR/cursor.png"
