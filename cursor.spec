@@ -1,6 +1,6 @@
 Name:           cursor
 Version:        %{cursor_version}
-Release:        6.fc43
+Release:        7.fc43
 Summary:        Cursor AI Code Editor (ARM64)
 License:        Proprietary
 URL:            https://cursor.sh

@@ -160,5 +160,28 @@ if [ -d "$CURSOR_EXTS" ]; then
   done
 fi
 
+# 9. Seed auth tokens from desktop Cursor
+echo "==> Seeding auth tokens from desktop Cursor..."
+CURSOR_DB="${HOME}/.config/Cursor/User/globalStorage/state.vscdb"
+AUTH_SEED="$SERVDIR/out/vs/code/browser/workbench/cursor-auth-seed.json"
+if [ -f "$CURSOR_DB" ]; then
+  python3 -c "
+import sqlite3, json
+db = sqlite3.connect('$CURSOR_DB')
+tokens = {}
+for key, value in db.execute(\"SELECT key, value FROM ItemTable WHERE key LIKE 'cursorAuth%'\"):
+    tokens[key] = value
+db.close()
+if tokens:
+    json.dump(tokens, open('$AUTH_SEED', 'w'))
+    print('  Auth tokens seeded: ' + ', '.join(tokens.keys()))
+else:
+    print('  WARNING: No auth tokens found in desktop Cursor DB')
+"
+else
+  echo "  WARNING: Desktop Cursor DB not found at $CURSOR_DB"
+  echo "  Login will not work without auth tokens."
+fi
+
 echo "==> Cursor Web patched successfully!"
 echo "    Start with: cursor-web"

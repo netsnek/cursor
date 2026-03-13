@@ -167,6 +167,14 @@ function handleChannelRequest(channelName, methodName, arg) {
         case 'watcher': return handleWatcher(methodName, arg);
         case 'userDataSyncAccount': return handleUserDataSync(methodName);
         case 'userDataSyncStoreManagement': return undefined;
+        case 'tracing': return undefined;  // telemetry/tracing — ignore
+        case 'abuse': return (methodName === 'getMachineId' || methodName === 'getMacMachineId') ? '' : undefined;
+        case 'agentAnalyticsOperations': return undefined;
+        case 'update': return (methodName === '_getInitialState') ? { type: 'idle' } : undefined;
+        case 'tray': return undefined;  // system tray — N/A in browser
+        case 'extensionGalleryManifest': return undefined;
+        case 'extensionHostStarter': return undefined;
+        case 'externalTerminal': return (methodName === 'getDefaultTerminalForPlatforms') ? {} : undefined;
         default:
             showStatus?.(`[IPC] unknown channel: ${channelName}.${methodName}`);
             return undefined;
@@ -190,13 +198,56 @@ function handleNativeHost(method, arg) {
         case 'readClipboardText': return '';
         case 'readClipboardFindText': return '';
         case 'readClipboardBuffer': return new Uint8Array(0);
+        case 'showMessageBox': {
+            const opts = Array.isArray(arg) ? arg[1] : arg;
+            if (opts?.detail) {
+                const urlMatch = opts.detail.match(/https?:\/\/\S+/);
+                if (urlMatch) window.open(urlMatch[0], '_blank');
+            }
+            return { response: 0, checkboxChecked: false };
+        }
+        case 'showOpenDialog': return { canceled: true, filePaths: [] };
+        case 'showSaveDialog': return { canceled: true };
+        case 'openExternal': {
+            const url = Array.isArray(arg) ? arg[0] : arg;
+            if (url) window.open(url, '_blank');
+            return true;
+        }
+        case 'focusWindow': case 'maximizeWindow': case 'minimizeWindow':
+        case 'unmaximizeWindow': case 'setMinimumSize': case 'setTitle':
+            return undefined;
         default: return undefined;
     }
 }
+// Storage: backed by localStorage, seeded from desktop Cursor's state.vscdb
+const _storagePrefix = 'cursor-web-storage:';
+function _storageGetAll() {
+    const items = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k.startsWith(_storagePrefix)) {
+            items.push([k.slice(_storagePrefix.length), localStorage.getItem(k)]);
+        }
+    }
+    return items;
+}
 function handleStorage(method, arg) {
     switch (method) {
-        case 'getItems': return [];
-        case 'updateItems': case 'optimize': case 'close': return undefined;
+        case 'getItems': return _storageGetAll();
+        case 'updateItems': {
+            if (arg?.insert) {
+                for (const [k, v] of arg.insert) {
+                    localStorage.setItem(_storagePrefix + k, v);
+                }
+            }
+            if (arg?.delete) {
+                for (const k of arg.delete) {
+                    localStorage.removeItem(_storagePrefix + k);
+                }
+            }
+            return undefined;
+        }
+        case 'optimize': case 'close': return undefined;
         case 'isUsed': return true;
         default: return undefined;
     }
@@ -371,11 +422,33 @@ function showStatus(msg) {
     console.warn('[CursorWeb] ' + msg);
 }
 
+// === Auth Token Seeding ===
+async function seedAuthTokens() {
+    if (localStorage.getItem(_storagePrefix + 'cursorAuth/accessToken')) {
+        showStatus('Auth tokens already in localStorage.');
+        return;
+    }
+    try {
+        const shimUrl = import.meta.url || document.currentScript?.src || '';
+        const baseUrl = shimUrl.substring(0, shimUrl.lastIndexOf('/') + 1);
+        const resp = await fetch(baseUrl + 'cursor-auth-seed.json');
+        if (!resp.ok) { showStatus('No auth seed file (run patch-cursor-web.sh).'); return; }
+        const tokens = await resp.json();
+        for (const [key, value] of Object.entries(tokens)) {
+            localStorage.setItem(_storagePrefix + key, value);
+        }
+        showStatus('Auth tokens seeded: ' + Object.keys(tokens).join(', '));
+    } catch (e) {
+        showStatus('Auth seed fetch failed: ' + e.message);
+    }
+}
+
 // === Boot ===
 performance.mark('code/willLoadWorkbenchMain');
 
 async function boot() {
     try {
+        await seedAuthTokens();
         showStatus('Loading desktop workbench...');
         const workbench = await import('../../../workbench/workbench.desktop.main.js');
         performance.mark('code/didLoadWorkbenchMain');
