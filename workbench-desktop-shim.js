@@ -207,7 +207,13 @@ function handleNativeHost(method, arg) {
             }
             return { response: 0, checkboxChecked: false };
         }
-        case 'showOpenDialog': return { canceled: true, filePaths: [] };
+        case 'showOpenDialog': {
+            const opts = Array.isArray(arg) ? arg[1] : arg;
+            const label = opts?.title || 'Enter folder path to open';
+            const path = window.prompt(label, '/home/snekmin');
+            if (path) return { canceled: false, filePaths: [path] };
+            return { canceled: true, filePaths: [] };
+        }
         case 'showSaveDialog': return { canceled: true };
         case 'openExternal': {
             const url = Array.isArray(arg) ? arg[0] : arg;
@@ -518,6 +524,13 @@ function showStatus(msg) {
 
 // === Auth Token Seeding ===
 async function seedAuthTokens() {
+    // Clean up stale desktop layout keys that break web UI
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k?.startsWith(_storagePrefix + 'cursor/') || k?.startsWith(_storagePrefix + 'cursor.')) {
+            localStorage.removeItem(k);
+        }
+    }
     if (localStorage.getItem(_storagePrefix + 'cursorAuth/accessToken')) {
         showStatus('Auth tokens already in localStorage.');
         return;

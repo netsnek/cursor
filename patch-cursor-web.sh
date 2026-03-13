@@ -169,7 +169,7 @@ if [ -f "$CURSOR_DB" ]; then
 import sqlite3, json
 db = sqlite3.connect('$CURSOR_DB')
 tokens = {}
-for key, value in db.execute(\"SELECT key, value FROM ItemTable WHERE key LIKE 'cursorAuth%' OR key LIKE 'cursorai/%' OR key LIKE 'cursor/%' OR key LIKE 'cursor.%' OR key LIKE 'telemetry.%'\"):
+for key, value in db.execute(\"SELECT key, value FROM ItemTable WHERE key LIKE 'cursorAuth%' OR key LIKE 'cursorai/%' OR key LIKE 'telemetry.%'\"):
     tokens[key] = value
 db.close()
 if tokens:
