@@ -121,7 +121,24 @@ else
   echo "  All clean — ARM64 only!"
 fi
 
-# 10. Rename binary: code → cursor
+# 10. Use Microsoft VS Code Marketplace instead of Cursor's limited marketplace
+echo "==> Patching product.json for Microsoft Marketplace..."
+python3 -c "
+import json
+p = 'vscode-arm64/resources/app/product.json'
+d = json.load(open(p))
+d['extensionsGallery'] = {
+    'nlsBaseUrl': 'https://www.vscode-unpkg.net/_lp/',
+    'serviceUrl': 'https://marketplace.visualstudio.com/_apis/public/gallery',
+    'itemUrl': 'https://marketplace.visualstudio.com/items',
+    'publisherUrl': 'https://marketplace.visualstudio.com/publishers',
+    'resourceUrlTemplate': 'https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}',
+    'controlUrl': 'https://main.vscode-cdn.net/extensions/marketplace.json',
+}
+json.dump(d, open(p, 'w'), indent=2)
+"
+
+# 11. Rename binary: code → cursor
 echo "==> Renaming binary..."
 mv vscode-arm64/code vscode-arm64/cursor 2>/dev/null || true
 mv vscode-arm64/bin/code vscode-arm64/bin/cursor 2>/dev/null || true
