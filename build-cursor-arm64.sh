@@ -154,10 +154,32 @@ d.pop('backupUpdateUrl', None)
 json.dump(d, open(p, 'w'), indent=2)
 "
 
-# 10b. Disable git commit attribution in workbench JS
+# 10b. Privacy: disable git commit attribution
 echo "==> Disabling git commit attribution..."
 sed -i 's/isAttributionDisabledByAdmin(){return this.getCached().attributionControls?.disableAttribution??!1}/isAttributionDisabledByAdmin(){return !0}/g' \
   vscode-arm64/resources/app/out/vs/workbench/workbench.desktop.main.js
+
+# 10c. Privacy: null out all tracking endpoints in JS bundles
+echo "==> Nulling tracking endpoints (Sentry, Statsig, Datadog)..."
+for jsfile in \
+  vscode-arm64/resources/app/out/vs/workbench/workbench.desktop.main.js \
+  vscode-arm64/resources/app/out/vs/workbench/api/node/extensionHostProcess.js \
+  vscode-arm64/resources/app/out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js \
+  vscode-arm64/resources/app/out/main.js; do
+  [ -f "$jsfile" ] || continue
+  # Sentry DSN
+  sed -i 's|https://[a-f0-9]*@o[0-9]*.ingest\.\(us\.\)\?sentry\.io/[0-9]*||g' "$jsfile"
+  # Statsig endpoints
+  sed -i 's|api\.statsigcdn\.com/v1||g' "$jsfile"
+  sed -i 's|featureassets\.org/v1||g' "$jsfile"
+  sed -i 's|statsigapi\.net/v1/sdk_exception||g' "$jsfile"
+  # Statsig client key
+  sed -i 's|client-Bm4HJ0aDjXHQVsoACMREyLNxm5p6zzuzhO50MgtoT5D||g' "$jsfile"
+  # Datadog
+  sed -i 's|us5\.datadoghq\.com||g' "$jsfile"
+  # Cursor's statsig event proxy
+  sed -i 's|https://api3\.cursor\.sh/tev1/v1||g' "$jsfile"
+done
 
 # 11. Rename binary: code → cursor
 echo "==> Renaming binary..."
