@@ -88,6 +88,7 @@ function readValue(buf, offset) {
 function serializeValue(v) {
     if (v === undefined) return writeUndefined();
     if (v === null) return writeUndefined();  // null → undefined in this protocol
+    if (typeof v === 'boolean') return writeInt(v ? 1 : 0);
     if (typeof v === 'number') return writeInt(v);
     if (typeof v === 'string') return writeString(v);
     if (v instanceof Uint8Array) return writeBuffer(v);
@@ -157,10 +158,10 @@ function handleChannelRequest(channelName, methodName, arg) {
         case 'storage': return handleStorage(methodName, arg);
         case 'policy': return handlePolicy(methodName);
         case 'keyboardLayout': return handleKeyboardLayout(methodName);
-        case 'sign': return (methodName === 'sign') ? (arg || '') : undefined;
+        case 'sign': return handleSign(methodName, arg);
         case 'workspaces': return handleWorkspaces(methodName);
         case 'userDataProfiles': return handleUserDataProfiles(methodName);
-        case 'extensions': return undefined;
+        case 'extensions': return handleExtensions(methodName, arg);
         case 'logger': return handleLogger(methodName, arg);
         case 'localFilesystem': return undefined;
         case 'utilityProcessWorker': return handleUtilityProcessWorker(methodName, arg);
@@ -219,6 +220,92 @@ function handleNativeHost(method, arg) {
         default: return undefined;
     }
 }
+// Sign service: uses vsda WASM for connection handshake
+let _vsdaModule = null;
+let _vsdaLoading = null;
+let _vsdaValidators = new Map();
+let _vsdaNextId = 1;
+
+async function _loadVsda() {
+    if (_vsdaModule) return _vsdaModule;
+    if (_vsdaLoading) return _vsdaLoading;
+    _vsdaLoading = (async () => {
+        try {
+            const shimUrl = import.meta.url || '';
+            const baseUrl = shimUrl.substring(0, shimUrl.lastIndexOf('/static/') + '/static/'.length);
+            const wasmUrl = baseUrl + 'node_modules/vsda/rust/web/vsda_bg.wasm';
+            const jsUrl = baseUrl + 'node_modules/vsda/rust/web/vsda.js';
+            // Load the vsda JS (sets globalThis.vsda_web)
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = jsUrl;
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+            // Fetch WASM and init synchronously
+            const wasmResp = await fetch(wasmUrl);
+            const wasmBytes = await wasmResp.arrayBuffer();
+            globalThis.vsda_web.initSync(wasmBytes);
+            _vsdaModule = globalThis.vsda_web;
+            showStatus?.('vsda WASM loaded for connection signing');
+            return _vsdaModule;
+        } catch (e) {
+            showStatus?.('vsda WASM load failed: ' + e.message);
+            return null;
+        }
+    })();
+    return _vsdaLoading;
+}
+
+// Pre-load vsda
+_loadVsda();
+
+function handleSign(method, arg) {
+    switch (method) {
+        case 'createNewMessage': {
+            const nonce = Array.isArray(arg) ? arg[0] : arg;
+            if (_vsdaModule) {
+                try {
+                    const v = new _vsdaModule.validator();
+                    const data = v.createNewMessage(nonce || '');
+                    const id = String(_vsdaNextId++);
+                    _vsdaValidators.set(id, v);
+                    return { id, data };
+                } catch (e) {
+                    showStatus?.('vsda createNewMessage error: ' + e.message);
+                }
+            }
+            return { id: '', data: nonce || '' };
+        }
+        case 'validate': {
+            // arg = [{ id, data }, signedData]
+            const msg = Array.isArray(arg) ? arg[0] : arg;
+            const signedData = Array.isArray(arg) ? arg[1] : '';
+            if (msg?.id && _vsdaValidators.has(msg.id)) {
+                const v = _vsdaValidators.get(msg.id);
+                _vsdaValidators.delete(msg.id);
+                try {
+                    const result = v.validate(signedData || '');
+                    v.free();
+                    return result === 'ok';
+                } catch (e) {
+                    v.free();
+                    showStatus?.('vsda validate error: ' + e.message);
+                }
+            }
+            return true;
+        }
+        case 'sign': {
+            const value = Array.isArray(arg) ? arg[0] : (arg || '');
+            if (_vsdaModule) {
+                try { return _vsdaModule.sign(value); } catch {}
+            }
+            return value;
+        }
+        default: return undefined;
+    }
+}
 // Storage: backed by localStorage, seeded from desktop Cursor's state.vscdb
 const _storagePrefix = 'cursor-web-storage:';
 function _storageGetAll() {
@@ -269,6 +356,13 @@ function handleUserDataProfiles(method) {
     if (method === 'getProfiles') return [];
     if (method === '_getInitialData') return { profiles: [], defaultProfile: null };
     return undefined;
+}
+function handleExtensions(method, arg) {
+    switch (method) {
+        case 'getExtensionsControlManifest': return { malicious: [], deprecated: {}, search: [], publisherMappings: {} };
+        case 'getInstalled': return [];
+        default: return undefined;
+    }
 }
 function handleLogger(method, arg) {
     // createLogger, registerLogger, log — all are fire-and-forget style
@@ -449,6 +543,7 @@ performance.mark('code/willLoadWorkbenchMain');
 async function boot() {
     try {
         await seedAuthTokens();
+        await _loadVsda();
         showStatus('Loading desktop workbench...');
         const workbench = await import('../../../workbench/workbench.desktop.main.js');
         performance.mark('code/didLoadWorkbenchMain');

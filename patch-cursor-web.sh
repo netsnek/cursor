@@ -169,12 +169,14 @@ if [ -f "$CURSOR_DB" ]; then
 import sqlite3, json
 db = sqlite3.connect('$CURSOR_DB')
 tokens = {}
-for key, value in db.execute(\"SELECT key, value FROM ItemTable WHERE key LIKE 'cursorAuth%'\"):
+for key, value in db.execute(\"SELECT key, value FROM ItemTable WHERE key LIKE 'cursorAuth%' OR key LIKE 'cursorai/%' OR key LIKE 'cursor/%' OR key LIKE 'cursor.%' OR key LIKE 'telemetry.%'\"):
     tokens[key] = value
 db.close()
 if tokens:
     json.dump(tokens, open('$AUTH_SEED', 'w'))
-    print('  Auth tokens seeded: ' + ', '.join(tokens.keys()))
+    auth_keys = [k for k in tokens if k.startswith('cursorAuth')]
+    print('  Auth tokens seeded: ' + ', '.join(auth_keys))
+    print('  Total keys seeded: ' + str(len(tokens)))
 else:
     print('  WARNING: No auth tokens found in desktop Cursor DB')
 "
