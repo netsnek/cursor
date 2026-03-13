@@ -187,6 +187,12 @@ mv vscode-arm64/code vscode-arm64/cursor 2>/dev/null || true
 mv vscode-arm64/bin/code vscode-arm64/bin/cursor 2>/dev/null || true
 sed -i 's|ELECTRON="$VSCODE_PATH/code"|ELECTRON="$VSCODE_PATH/cursor"|' vscode-arm64/bin/cursor
 
+# 11b. Fix tunnel binary name (product.json expects "cursor-tunnel", VS Code ships "code-tunnel")
+if [ -f "vscode-arm64/bin/code-tunnel" ] && [ ! -f "vscode-arm64/bin/cursor-tunnel" ]; then
+  ln -sf code-tunnel vscode-arm64/bin/cursor-tunnel
+  echo "  symlinked: code-tunnel → cursor-tunnel"
+fi
+
 # 11. Extract icon
 ICON=""
 for candidate in "squashfs-root/co.anysphere.cursor.png" "squashfs-root/cursor.png"; do

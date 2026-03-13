@@ -22,6 +22,16 @@ ln -sf /opt/cursor/bin/cursor "$RPMDIR/SOURCES/staging/usr/bin/cursor"
 cp "$SCRIPTDIR/cursor.desktop" "$RPMDIR/SOURCES/staging/usr/share/applications/"
 cp "$WORKDIR/out/cursor.png" "$RPMDIR/SOURCES/staging/usr/share/pixmaps/cursor.png"
 
+# cursor-web launcher
+cp "$SCRIPTDIR/cursor-web.sh" "$RPMDIR/SOURCES/staging/usr/bin/cursor-web"
+chmod +x "$RPMDIR/SOURCES/staging/usr/bin/cursor-web"
+
+# cursor-web patch script and desktop shim (for patching serve-web server)
+mkdir -p "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web"
+cp "$SCRIPTDIR/patch-cursor-web.sh" "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/"
+cp "$SCRIPTDIR/workbench-desktop-shim.js" "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/"
+chmod +x "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/patch-cursor-web.sh"
+
 # Copy spec
 cp "$SCRIPTDIR/cursor.spec" "$RPMDIR/SPECS/"
 
