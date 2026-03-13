@@ -121,12 +121,14 @@ else
   echo "  All clean — ARM64 only!"
 fi
 
-# 10. Use Microsoft VS Code Marketplace instead of Cursor's limited marketplace
-echo "==> Patching product.json for Microsoft Marketplace..."
+# 10. Patch product.json: Microsoft Marketplace + disable telemetry + no updates
+echo "==> Patching product.json..."
 python3 -c "
 import json
 p = 'vscode-arm64/resources/app/product.json'
 d = json.load(open(p))
+
+# Use Microsoft VS Code Marketplace
 d['extensionsGallery'] = {
     'nlsBaseUrl': 'https://www.vscode-unpkg.net/_lp/',
     'serviceUrl': 'https://marketplace.visualstudio.com/_apis/public/gallery',
@@ -135,8 +137,27 @@ d['extensionsGallery'] = {
     'resourceUrlTemplate': 'https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}',
     'controlUrl': 'https://main.vscode-cdn.net/extensions/marketplace.json',
 }
+
+# Disable telemetry
+d['enableTelemetry'] = False
+d['enabledTelemetryLevels'] = {'error': False, 'usage': False}
+d.pop('statsigClientKey', None)
+d.pop('statsigLogEventProxyUrl', None)
+d.pop('crashReporterId', None)
+d.pop('appInsightsConnectionString', None)
+d.pop('aiConfig', None)
+
+# Remove auto-update (managed via RPM)
+d.pop('updateUrl', None)
+d.pop('backupUpdateUrl', None)
+
 json.dump(d, open(p, 'w'), indent=2)
 "
+
+# 10b. Disable git commit attribution in workbench JS
+echo "==> Disabling git commit attribution..."
+sed -i 's/isAttributionDisabledByAdmin(){return this.getCached().attributionControls?.disableAttribution??!1}/isAttributionDisabledByAdmin(){return !0}/g' \
+  vscode-arm64/resources/app/out/vs/workbench/workbench.desktop.main.js
 
 # 11. Rename binary: code → cursor
 echo "==> Renaming binary..."
