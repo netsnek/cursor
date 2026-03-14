@@ -10,6 +10,7 @@ SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Start CORS proxy for Cursor API calls (api2.cursor.sh)
 CORS_PROXY="$SCRIPTDIR/cursor-cors-proxy.js"
+[ ! -f "$CORS_PROXY" ] && CORS_PROXY="$CURSOR_DIR/share/cursor-web/cursor-cors-proxy.js"
 if [ -f "$CORS_PROXY" ]; then
   # Kill any existing proxy on this port
   fuser -k "$CORS_PORT/tcp" 2>/dev/null || true

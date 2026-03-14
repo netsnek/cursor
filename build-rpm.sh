@@ -30,6 +30,7 @@ chmod +x "$RPMDIR/SOURCES/staging/usr/bin/cursor-web"
 mkdir -p "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web"
 cp "$SCRIPTDIR/patch-cursor-web.sh" "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/"
 cp "$SCRIPTDIR/workbench-desktop-shim.js" "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/"
+cp "$SCRIPTDIR/cursor-cors-proxy.js" "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/"
 chmod +x "$RPMDIR/SOURCES/staging/opt/cursor/share/cursor-web/patch-cursor-web.sh"
 
 # Copy spec
