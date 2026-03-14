@@ -32,7 +32,7 @@ This project makes the desktop workbench run in a plain browser by:
 │  │  │  - MessagePort ↔ HTTP translation           │  │  │
 │  │  │  - Binary protocol (varint MQ serialization)│  │  │
 │  │  │  - Storage backed by localStorage           │  │  │
-│  │  │  - CORS proxy fetch interception             │  │  │
+│  │  │  - CORS proxy fetch interception            │  │  │
 │  │  └─────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────┘  │
 │         ↕ HTTP/WS              ↕ HTTP (CORS proxy)      │
@@ -43,7 +43,7 @@ This project makes the desktop workbench run in a plain browser by:
 │         ↕                       ↕ HTTPS                 │
 │  Local filesystem        api[2-5].cursor.sh             │
 │  Extension host          statsigcdn.com                 │
-│  Remote agent            featureassets.org               │
+│  Remote agent            featureassets.org              │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -69,17 +69,17 @@ Each channel uses VS Code's binary protocol: varint-length-prefixed messages wit
 
 ```
 x86 Cursor AppImage           VS Code ARM64 (open source)
-┌──────────────────┐          ┌──────────────────────────┐
+┌──────────────────┐         ┌──────────────────────────┐
 │ Electron (x86)   │ ←skip   │ Electron (ARM64)    ✓    │
 │ Node.js  (x86)   │ ←skip   │ Node.js  (ARM64)    ✓    │
 │ V8       (x86)   │ ←skip   │ V8       (ARM64)    ✓    │
-│                  │          │                          │
+│                  │         │                          │
 │ resources/app/   │ ←copy→  │ resources/app/      ✓    │
-│   out/           │  (JS)   │   out/           (Cursor) │
-│   extensions/    │         │   extensions/    (Cursor) │
-│   node_modules   │         │   node_modules   (Cursor) │
-│   product.json   │         │   product.json   (Cursor) │
-└──────────────────┘          └──────────────────────────┘
+│   out/           │  (JS)   │   out/           (Cursor)│
+│   extensions/    │         │   extensions/    (Cursor)│
+│   node_modules   │         │   node_modules   (Cursor)│
+│   product.json   │         │   product.json   (Cursor)│
+└──────────────────┘         └──────────────────────────┘
                                        ↓
                               Cursor ARM64 (native)
 ```
