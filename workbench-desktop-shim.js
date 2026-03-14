@@ -2,6 +2,46 @@
  * Cursor Web — desktop workbench in browser with IPC bridge
  *--------------------------------------------------------*/
 
+// === CORS Proxy for Cursor API calls ===
+// The desktop workbench makes fetch/gRPC calls to api[2-5].cursor.sh and
+// various agent subdomains. All are blocked by CORS in the browser.
+// Intercept and route through local proxy.
+{
+    const _originalFetch = window.fetch;
+    const PROXY_PORT = 9080;
+    // Match Cursor API endpoints + Statsig feature flag domains (CORS-blocked in browser)
+    const _cursorApiRe = /https?:\/\/(?:[a-z0-9-]*\.?(?:api[2-5]\.cursor\.sh)|api\.statsigcdn\.com|featureassets\.org|prodregistryv2\.org|statsigapi\.net)/;
+    // Rewrite vscode-remote:// URLs to local HTTP resource endpoint
+    const _vsRemoteRe = /^vscode-remote:\/\/[^/]+(\/.*)$/;
+    window.fetch = function(input, init) {
+        let url = (input instanceof Request) ? input.url : String(input);
+        // Handle vscode-remote:// scheme (extension resources loaded by desktop workbench)
+        const rm = url.match(_vsRemoteRe);
+        if (rm) {
+            const resourcePath = rm[1];
+            const rewritten = window.location.origin + '/vscode-remote-resource?path=' + encodeURIComponent(resourcePath);
+            input = (input instanceof Request) ? new Request(rewritten, input) : rewritten;
+        }
+        const m = url.match(_cursorApiRe);
+        if (m) {
+            const originalHost = m[0].replace(/^https?:\/\//, '');
+            const proxied = url.replace(_cursorApiRe, `http://127.0.0.1:${PROXY_PORT}`);
+            if (input instanceof Request) {
+                const newInit = { method: input.method, headers: new Headers(input.headers), body: input.body, mode: 'cors', credentials: input.credentials, redirect: input.redirect, referrer: input.referrer, signal: input.signal };
+                newInit.headers.set('X-Proxy-Host', originalHost);
+                input = new Request(proxied, newInit);
+            } else {
+                init = init || {};
+                const headers = new Headers(init.headers || {});
+                headers.set('X-Proxy-Host', originalHost);
+                init = { ...init, headers };
+                input = proxied;
+            }
+        }
+        return _originalFetch.call(window, input, init);
+    };
+}
+
 // === IPC Binary Protocol (varint-based, matching VS Code's MQ serialization) ===
 // Tags: Undefined=0, String=1, Buffer=2, VSBuffer=3, Array=4, Object=5, Int=6, Uint8Array=7
 const MQ = { Undefined: 0, String: 1, Buffer: 2, VSBuffer: 3, Array: 4, Object: 5, Int: 6, Uint8Array: 7 };
@@ -152,33 +192,137 @@ function handleProtocolMessage(buf, respond) {
 }
 
 // === Channel Handlers ===
+// These are IPC channels the desktop workbench expects from the Electron main process.
+// The remote serve-web server provides SEPARATE services over WebSocket (file system,
+// terminal, extension host, search, etc.) — those are NOT these channels.
+// We must stub all main-process IPC channels so the workbench doesn't hang.
 function handleChannelRequest(channelName, methodName, arg) {
     switch (channelName) {
         case 'nativeHost': return handleNativeHost(methodName, arg);
-        case 'storage': return handleStorage(methodName, arg);
-        case 'policy': return handlePolicy(methodName);
-        case 'keyboardLayout': return handleKeyboardLayout(methodName);
         case 'sign': return handleSign(methodName, arg);
-        case 'workspaces': return handleWorkspaces(methodName);
-        case 'userDataProfiles': return handleUserDataProfiles(methodName);
-        case 'extensions': return handleExtensions(methodName, arg);
-        case 'logger': return handleLogger(methodName, arg);
-        case 'localFilesystem': return undefined;
-        case 'utilityProcessWorker': return handleUtilityProcessWorker(methodName, arg);
-        case 'watcher': return handleWatcher(methodName, arg);
-        case 'userDataSyncAccount': return handleUserDataSync(methodName);
-        case 'userDataSyncStoreManagement': return undefined;
-        case 'tracing': return undefined;  // telemetry/tracing — ignore
+        case 'storage': return handleStorage(methodName, arg);
+        case 'keyboardLayout': return handleKeyboardLayout(methodName);
+        case 'policy': return (methodName === 'getPolicyDefinitions' || methodName === 'getPolicies') ? {} : undefined;
+        case 'logger': return undefined;
+        case 'tracing': return undefined;
         case 'abuse': return (methodName === 'getMachineId' || methodName === 'getMacMachineId') ? '' : undefined;
-        case 'agentAnalyticsOperations': return undefined;
         case 'update': return (methodName === '_getInitialState') ? { type: 'idle' } : undefined;
-        case 'tray': return undefined;  // system tray — N/A in browser
-        case 'extensionGalleryManifest': return undefined;
-        case 'extensionHostStarter': return undefined;
+        case 'tray': return undefined;
         case 'externalTerminal': return (methodName === 'getDefaultTerminalForPlatforms') ? {} : undefined;
-        default:
-            showStatus?.(`[IPC] unknown channel: ${channelName}.${methodName}`);
+        case 'agentAnalyticsOperations': return undefined;
+        // Local filesystem — main process reads local config files.
+        // In browser, these don't exist locally. Throw FileNotFound so VS Code uses defaults.
+        case 'localFilesystem': return handleLocalFilesystem(methodName, arg);
+        // Recently opened workspaces — main process concern, return empty
+        case 'workspaces': return (methodName === 'getRecentlyOpened') ? { workspaces: [], files: [] } : undefined;
+        // User profiles — main process concern, return empty defaults
+        case 'userDataProfiles':
+            if (methodName === 'getProfiles') return [];
+            if (methodName === '_getInitialData') return { profiles: [], defaultProfile: null };
             return undefined;
+        // Extensions control manifest — main process downloads this, stub empty
+        case 'extensions':
+            if (methodName === 'getExtensionsControlManifest') return { malicious: [], deprecated: {}, search: [], publisherMappings: {} };
+            // getInstalled etc. — the remote server's extension host handles actual extensions
+            return [];
+        case 'extensionGalleryManifest': return undefined;
+        // Extension host starter — main process launches extension host process.
+        // In serve-web, the server runs the remote extension host. We return a stub
+        // for the local extension host so the workbench doesn't crash.
+        case 'extensionHostStarter': return handleExtensionHostStarter(methodName, arg);
+        // File watcher — main process watches local files. In serve-web, server does this.
+        case 'watcher': return undefined;
+        // Utility process workers — main process concern
+        case 'utilityProcessWorker': return undefined;
+        // User data sync
+        case 'userDataSyncAccount': return (methodName === '_getInitialData') ? { account: undefined } : undefined;
+        case 'userDataSyncStoreManagement': return undefined;
+        case 'userDataSync': return (methodName === '_getInitialData') ? { version: 1, machineId: '', enabledExtensions: [], enabledResources: [] } : undefined;
+        // Local PTY — main process manages local terminals, remote server has its own
+        case 'localPty': return (methodName === 'getPerformanceMarks') ? [] : undefined;
+        // Path inspection — desktop checks if executables exist locally
+        case 'pathInspection': return false;
+        // Continuous profiling
+        case 'continuousProfiling': return undefined;
+        default:
+            showStatus?.(`[IPC] unhandled channel: ${channelName}.${methodName}`);
+            return undefined;
+    }
+}
+
+// Local filesystem: the desktop workbench reads local config files via this IPC channel.
+// In browser mode, we fake directory stats so the workbench can create its folder structure,
+// and throw FileNotFound for files so VS Code uses defaults.
+// The REMOTE filesystem (workspace files) is handled by the serve-web server over WebSocket.
+function handleLocalFilesystem(method, arg) {
+    const uri = Array.isArray(arg) ? arg[0] : arg;
+    const path = uri?.path || '';
+
+    if (method === 'stat') {
+        const basename = path.split('/').pop() || '';
+        const hasExtension = basename.includes('.');
+        const isUnderCursor = path.includes('/.cursor/');
+
+        // Well-known directory paths
+        if (path === '/home/snekmin' || path === '/home' || path === '/' ||
+            path.endsWith('/.cursor') || path.endsWith('/globalStorage') ||
+            path.endsWith('/logs') || path.endsWith('/profiles') ||
+            path.endsWith('/snippets') || path.endsWith('/prompts') ||
+            path.endsWith('/cache')) {
+            return { type: 2, ctime: Date.now(), mtime: Date.now(), size: 0 };
+        }
+        // Paths under .cursor/ — return dir stat for dirs, file stat for files
+        if (isUnderCursor) {
+            if (hasExtension) {
+                // Files under .cursor (logs, config, db) — return empty file stat
+                return { type: 1, ctime: Date.now(), mtime: Date.now(), size: 0 };
+            }
+            // Subdirectories
+            return { type: 2, ctime: Date.now(), mtime: Date.now(), size: 0 };
+        }
+        // Everything else: not found
+        const err = new Error('FileNotFound');
+        err.name = 'EntryNotFound (FileSystemError)';
+        err.code = 'FileNotFound';
+        throw err;
+    }
+    if (method === 'readFile') {
+        const err = new Error('FileNotFound');
+        err.name = 'EntryNotFound (FileSystemError)';
+        err.code = 'FileNotFound';
+        throw err;
+    }
+    if (method === 'readdir') {
+        return []; // Empty directory listing
+    }
+    // Write operations — return appropriate stat so the workbench thinks they succeeded
+    if (method === 'createFile' || method === 'writeFile') {
+        // Return file stat (type 1 = File)
+        return { type: 1, ctime: Date.now(), mtime: Date.now(), size: 0 };
+    }
+    if (method === 'mkdir') {
+        return { type: 2, ctime: Date.now(), mtime: Date.now(), size: 0 };
+    }
+    // delete, rename, watch — silently succeed
+    return undefined;
+}
+
+// Extension host starter: the desktop workbench tries to start a LocalProcess extension host.
+// We return a stub ID so it doesn't crash, but the process never actually starts.
+// The remote server's extension host (started by serve-web) handles all extensions.
+let _fakeExtHostId = 0;
+function handleExtensionHostStarter(method, arg) {
+    switch (method) {
+        case 'createExtensionHost': return { id: String(++_fakeExtHostId) };
+        case 'start': {
+            // Return pid so the workbench doesn't crash destructuring.
+            // The local extension host "starts" but won't do anything useful —
+            // the remote extension host (from serve-web) handles everything.
+            return { pid: 0 };
+        }
+        case 'getInspectPort': return undefined;
+        case 'kill': return undefined;
+        default: return undefined;
     }
 }
 
@@ -220,9 +364,42 @@ function handleNativeHost(method, arg) {
             if (url) window.open(url, '_blank');
             return true;
         }
+        case 'openWindow': {
+            // Desktop workbench calls openWindow after showOpenDialog to open a folder/file.
+            // IPC arg = [windowId, [{folderUri: URI}, ...], {forceNewWindow: bool, ...}]
+            const items = Array.isArray(arg) ? arg[1] : [];
+            const opts = Array.isArray(arg) ? arg[2] : {};
+            if (Array.isArray(items) && items.length > 0) {
+                const item = items[0];
+                // Extract path from URI object ({$mid, scheme, path, ...}) or string
+                const extractPath = (uri) => {
+                    if (!uri) return '';
+                    if (typeof uri === 'string') try { return new URL(uri).pathname; } catch { return uri; }
+                    return uri.path || '';
+                };
+                const folderPath = extractPath(item.folderUri);
+                const filePath = extractPath(item.fileUri);
+                const wsPath = extractPath(item.workspaceUri);
+                const target = folderPath || wsPath || filePath;
+                if (target) {
+                    showStatus?.(`openWindow: navigating to folder=${target}`);
+                    if (opts?.forceNewWindow) {
+                        window.open('/?folder=' + encodeURIComponent(target), '_blank');
+                    } else {
+                        window.location.href = '/?folder=' + encodeURIComponent(target);
+                    }
+                }
+            }
+            return undefined;
+        }
         case 'focusWindow': case 'maximizeWindow': case 'minimizeWindow':
         case 'unmaximizeWindow': case 'setMinimumSize': case 'setTitle':
+        case 'notifyReady': case 'updateWindowControls': case 'positionWindow':
+        case 'installShellCommand': case 'writeClipboardText': case 'writeClipboardBuffer':
             return undefined;
+        case 'isAdmin': return false;
+        case 'getActiveWindowPosition': return { x: 0, y: 0, width: 1920, height: 1080 };
+        case 'getCursorScreenPoint': return { x: 0, y: 0 };
         default: return undefined;
     }
 }
@@ -324,6 +501,7 @@ function _storageGetAll() {
     }
     return items;
 }
+// No storage write-protection needed — layout toggle happens post-boot.
 function handleStorage(method, arg) {
     switch (method) {
         case 'getItems': return _storageGetAll();
@@ -345,46 +523,11 @@ function handleStorage(method, arg) {
         default: return undefined;
     }
 }
-function handlePolicy(method) {
-    return (method === 'getPolicyDefinitions' || method === 'getPolicies') ? {} : undefined;
-}
 function handleKeyboardLayout(method) {
     if (method === 'getKeyboardLayoutData' || method === 'getCurrentKeyboardLayoutData')
         return { keyboardLayoutInfo: { model: '', layout: 'de', variant: '', options: '', rules: '' }, keyboardMapping: {} };
     if (method === 'getCurrentKeyboardLayout')
         return { model: '', layout: 'de', variant: '', options: '', rules: '' };
-    return undefined;
-}
-function handleWorkspaces(method) {
-    return (method === 'getRecentlyOpened') ? { workspaces: [], files: [] } : undefined;
-}
-function handleUserDataProfiles(method) {
-    if (method === 'getProfiles') return [];
-    if (method === '_getInitialData') return { profiles: [], defaultProfile: null };
-    return undefined;
-}
-function handleExtensions(method, arg) {
-    switch (method) {
-        case 'getExtensionsControlManifest': return { malicious: [], deprecated: {}, search: [], publisherMappings: {} };
-        case 'getInstalled': return [];
-        default: return undefined;
-    }
-}
-function handleLogger(method, arg) {
-    // createLogger, registerLogger, log — all are fire-and-forget style
-    return undefined;
-}
-function handleUtilityProcessWorker(method, arg) {
-    if (method === 'createWorker') return undefined;
-    return undefined;
-}
-function handleWatcher(method, arg) {
-    if (method === 'watch') return undefined;
-    if (method === 'setVerboseLogging') return undefined;
-    return undefined;
-}
-function handleUserDataSync(method) {
-    if (method === '_getInitialData') return { account: undefined };
     return undefined;
 }
 
@@ -503,9 +646,17 @@ globalThis.vscode = {
 const configElement = document.getElementById('vscode-workbench-web-configuration');
 const webConfig = JSON.parse(configElement?.getAttribute('data-settings') || '{}');
 
+// Extract commit hash from <base> tag URL (e.g. /stable-{commit}/static/...)
+const _baseHref = document.querySelector('base')?.getAttribute('href') || '';
+const _commitMatch = _baseHref.match(/\/\w+-([a-f0-9]{40})\//);
+const _commit = _commitMatch ? _commitMatch[1] : '';
+
 globalThis._VSCODE_PRODUCT_JSON = Object.assign({
     "quality": "stable", "licenseName": "MIT",
     "version": "2.6.19",
+    "vscodeVersion": "1.105.1",
+    "commit": _commit,
+    "dataFolderName": ".cursor",
     "serverApplicationName": "cursor-server",
     "serverDataFolderName": ".cursor-server",
     "tunnelApplicationName": "cursor-tunnel",
@@ -524,12 +675,35 @@ function showStatus(msg) {
 
 // === Auth Token Seeding ===
 async function seedAuthTokens() {
-    // Clean up stale desktop layout keys that break web UI
+    // Clean up stale desktop keys that break web UI, but preserve layout state
+    const _layoutKeepPrefixes = ['cursor/editorLayout.', 'cursor/agentLayout.', 'cursor/unifiedAppLayout',
+        'cursor/layoutControl.', 'cursor/noTitlebarLayout.', 'cursor/migrateEditorMode.',
+        'cursor/defaultLayoutMode', 'cursor/globalLayoutState'];
     for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i);
         if (k?.startsWith(_storagePrefix + 'cursor/') || k?.startsWith(_storagePrefix + 'cursor.')) {
+            const suffix = k.slice(_storagePrefix.length);
+            if (_layoutKeepPrefixes.some(p => suffix.startsWith(p))) continue;
             localStorage.removeItem(k);
         }
+    }
+    // One-time layout reset: undo damage from migrate_editor_mode migration
+    // (now disabled via workbench patch 7o) and prevent onboarding from forcing Agent mode.
+    const _layoutFixVersion = '7';
+    const _layoutFixKey = _storagePrefix + 'cursorWeb/layoutFixApplied';
+    if (localStorage.getItem(_layoutFixKey) !== _layoutFixVersion) {
+        // Reset Agent mode hidden flags
+        for (const k of ['workbench.sideBar.hidden', 'workbench.auxiliaryBar.hidden',
+            'workbench.activityBar.hidden', 'workbench.unifiedSidebar.hidden']) {
+            localStorage.removeItem(_storagePrefix + k);
+        }
+        // Reset layout mode — default is M0.Editor ("editor")
+        localStorage.removeItem(_storagePrefix + 'cursor/unifiedAppLayout');
+        localStorage.removeItem(_storagePrefix + 'cursor/migrateEditorMode.forceUnified');
+        // Skip onboarding agent walkthrough (prevents onboarding from forcing Agent mode)
+        localStorage.setItem(_storagePrefix + 'cursor/hasSeenAgentWindowWalkthrough', 'true');
+        localStorage.setItem(_layoutFixKey, _layoutFixVersion);
+        showStatus('Layout reset applied (migration disabled, onboarding skipped).');
     }
     if (localStorage.getItem(_storagePrefix + 'cursorAuth/accessToken')) {
         showStatus('Auth tokens already in localStorage.');
@@ -550,6 +724,35 @@ async function seedAuthTokens() {
     }
 }
 
+// === Auto-dismiss Cursor onboarding overlay ===
+// The onboarding walkthrough forces Agent mode and is unnecessary for serve-web.
+// Remove it from DOM immediately whenever it appears.
+function dismissOnboardingOverlay() {
+    const check = () => {
+        const container = document.querySelector('.onboarding-v2-container');
+        if (container) {
+            // Walk up to the full-screen flex wrapper and remove it entirely
+            let target = container;
+            while (target.parentElement && target.parentElement !== document.body
+                && getComputedStyle(target.parentElement).height === '100%') {
+                target = target.parentElement;
+            }
+            target.remove();
+            showStatus('Removed onboarding overlay from DOM');
+            return;
+        }
+        // Also check for the overlay variant
+        const overlay = document.querySelector('.onboarding-v2-overlay');
+        if (overlay) {
+            overlay.remove();
+            showStatus('Removed onboarding overlay from DOM');
+            return;
+        }
+        setTimeout(check, 500);
+    };
+    setTimeout(check, 1500);
+}
+
 // === Boot ===
 performance.mark('code/willLoadWorkbenchMain');
 
@@ -565,6 +768,19 @@ async function boot() {
         const authority = webConfig.remoteAuthority || window.location.host;
         const makeUri = (path) => ({ scheme: 'vscode-remote', authority, path });
 
+        // Read workspace from URL query params (same as web workbench)
+        const params = new URLSearchParams(window.location.search);
+        const folderParam = params.get('folder');
+        const workspaceParam = params.get('workspace');
+        let workspace = undefined;
+        if (folderParam) {
+            // Single folder workspace: K1c() revives { id, uri } via je.revive()
+            workspace = { id: crypto.randomUUID(), uri: { scheme: 'vscode-remote', authority, path: folderParam } };
+        } else if (workspaceParam) {
+            // Multi-root workspace: K1c() revives { id, configPath } via je.revive()
+            workspace = { id: crypto.randomUUID(), configPath: { scheme: 'vscode-remote', authority, path: workspaceParam } };
+        }
+
         const desktopConfig = {
             windowId: 1,
             machineId: 'web-' + (localStorage.getItem('cursor-mid') || (() => { const id = crypto.randomUUID(); localStorage.setItem('cursor-mid', id); return id; })()),
@@ -576,6 +792,7 @@ async function boot() {
             userDataDir: '/home/snekmin/.cursor',
             backupPath: '',
             isInitialStartup: !localStorage.getItem('cursor-init'),
+            workspace,
             fullscreen: false, maximized: false, glass: false,
             colorScheme: { dark: window.matchMedia('(prefers-color-scheme: dark)').matches, highContrast: false },
             autoDetectColorScheme: true, autoDetectHighContrast: true,
@@ -621,6 +838,7 @@ async function boot() {
         showStatus('Calling workbench.main()...');
         const result = workbench.main(desktopConfig);
         showStatus('workbench.main() returned: ' + typeof result);
+        dismissOnboardingOverlay(); // Auto-dismiss CORS-blocked overlay
         if (result?.then) {
             result.then(() => showStatus('Promise resolved — workbench started.'))
                   .catch(e => showStatus('Promise rejected: ' + e + '\nStack: ' + (e?.stack || 'none')));

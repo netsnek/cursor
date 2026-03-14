@@ -53,6 +53,23 @@ tar xzf vscode-arm64.tar.gz -C vscode-arm64-clean --strip-components=1
 # Keep a clean copy for native module extraction
 cp -a vscode-arm64-clean vscode-arm64
 
+# 5b. Download ARM64 Cursor AppImage (for native helper binaries)
+echo "==> Downloading ARM64 Cursor AppImage..."
+curl -Lo cursor-arm64.AppImage \
+  "https://api2.cursor.sh/updates/download/golden/linux-arm64/cursor/latest"
+echo "==> Extracting ARM64 AppImage..."
+rm -rf cursor-arm64-sq
+chmod +x cursor-arm64.AppImage
+./cursor-arm64.AppImage --appimage-extract 2>/dev/null
+mv squashfs-root cursor-arm64-sq 2>/dev/null || true
+# Detect app root in ARM64 AppImage
+if [ -d "cursor-arm64-sq/usr/share/cursor/resources/app" ]; then
+  ARM64_APP_ROOT="cursor-arm64-sq/usr/share/cursor"
+else
+  ARM64_APP_ROOT="cursor-arm64-sq"
+fi
+echo "==> ARM64 app root: $ARM64_APP_ROOT"
+
 # 6. Graft Cursor's proprietary JS onto VS Code ARM64
 echo "==> Grafting Cursor onto VS Code ARM64..."
 
@@ -73,6 +90,14 @@ done
 rm -rf vscode-arm64/resources/app/resources
 cp -R "$APP_ROOT/resources/app/resources" vscode-arm64/resources/app/
 
+# 6b. Replace x86 helper binaries with ARM64 from native AppImage
+echo "==> Installing ARM64 helper binaries..."
+if [ -d "$ARM64_APP_ROOT/resources/app/resources/helpers" ]; then
+  cp "$ARM64_APP_ROOT/resources/app/resources/helpers/"* \
+     vscode-arm64/resources/app/resources/helpers/
+  echo "  Replaced: $(ls "$ARM64_APP_ROOT/resources/app/resources/helpers/" | tr '\n' ' ')"
+fi
+
 # 7. Handle node_modules: copy Cursor's JS, then fix native modules
 echo "==> Copying Cursor node_modules (JS code)..."
 rm -rf vscode-arm64/resources/app/node_modules
@@ -87,29 +112,16 @@ rm -rf vscode-arm64/resources/app/node_modules.asar.unpacked
 [ -d "vscode-arm64-clean/resources/app/node_modules.asar.unpacked" ] && \
   cp -R "vscode-arm64-clean/resources/app/node_modules.asar.unpacked" vscode-arm64/resources/app/
 
-# 8. Replace x86 native .node modules with ARM64 from VS Code
-echo "==> Replacing x86 native modules with ARM64..."
-find vscode-arm64-clean/resources/app/node_modules -name "*.node" -type f | while read arm64_file; do
-  relpath="${arm64_file#vscode-arm64-clean/resources/app/node_modules/}"
+# 8. Replace x86 native .node modules with ARM64 from Cursor ARM64 AppImage
+echo "==> Replacing x86 native modules with ARM64 (from Cursor ARM64)..."
+find "$ARM64_APP_ROOT/resources/app/node_modules" -name "*.node" -type f | while read arm64_file; do
+  relpath="${arm64_file#$ARM64_APP_ROOT/resources/app/node_modules/}"
   target="vscode-arm64/resources/app/node_modules/$relpath"
   if [ -f "$target" ]; then
     cp "$arm64_file" "$target"
     echo "  replaced: $relpath"
   fi
 done
-
-# Handle Cursor-only native modules:
-# @anysphere/policy-watcher → same as @vscode/policy-watcher
-VSCODE_PW="vscode-arm64-clean/resources/app/node_modules/@vscode/policy-watcher/build/Release/vscode-policy-watcher.node"
-CURSOR_PW="vscode-arm64/resources/app/node_modules/@anysphere/policy-watcher/build/Release/vscode-policy-watcher.node"
-if [ -f "$VSCODE_PW" ] && [ -f "$CURSOR_PW" ]; then
-  cp "$VSCODE_PW" "$CURSOR_PW"
-  echo "  replaced: @anysphere/policy-watcher (from @vscode/policy-watcher)"
-fi
-
-# cursor-proclist — x86-only, non-critical, remove
-PROCLIST="vscode-arm64/resources/app/node_modules/cursor-proclist/build/Release/cursor_proclist.node"
-[ -f "$PROCLIST" ] && rm "$PROCLIST" && echo "  removed: cursor-proclist (x86-only, non-critical)"
 
 # 9. Verify no x86 .node files remain in node_modules
 echo "==> Verifying architecture..."
@@ -141,8 +153,9 @@ d['extensionsGallery'] = {
 # Disable telemetry
 d['enableTelemetry'] = False
 d['enabledTelemetryLevels'] = {'error': False, 'usage': False}
-d.pop('statsigClientKey', None)
-d.pop('statsigLogEventProxyUrl', None)
+# Keep statsigClientKey — Statsig feature flags are needed for model loading
+# d.pop('statsigClientKey', None)
+d.pop('statsigLogEventProxyUrl', None)  # Disable event logging proxy only
 d.pop('crashReporterId', None)
 d.pop('appInsightsConnectionString', None)
 d.pop('aiConfig', None)
@@ -159,8 +172,9 @@ echo "==> Disabling git commit attribution..."
 sed -i 's/isAttributionDisabledByAdmin(){return this.getCached().attributionControls?.disableAttribution??!1}/isAttributionDisabledByAdmin(){return !0}/g' \
   vscode-arm64/resources/app/out/vs/workbench/workbench.desktop.main.js
 
-# 10c. Privacy: null out all tracking endpoints in JS bundles
-echo "==> Nulling tracking endpoints (Sentry, Statsig, Datadog)..."
+# 10c. Privacy: null out crash reporting and metrics endpoints
+# NOTE: Do NOT strip Statsig endpoints/key — feature flags are needed for model loading
+echo "==> Nulling tracking endpoints (Sentry, Datadog)..."
 for jsfile in \
   vscode-arm64/resources/app/out/vs/workbench/workbench.desktop.main.js \
   vscode-arm64/resources/app/out/vs/workbench/api/node/extensionHostProcess.js \
@@ -169,15 +183,9 @@ for jsfile in \
   [ -f "$jsfile" ] || continue
   # Sentry DSN
   sed -i 's|https://[a-f0-9]*@o[0-9]*.ingest\.\(us\.\)\?sentry\.io/[0-9]*||g' "$jsfile"
-  # Statsig endpoints
-  sed -i 's|api\.statsigcdn\.com/v1||g' "$jsfile"
-  sed -i 's|featureassets\.org/v1||g' "$jsfile"
-  sed -i 's|statsigapi\.net/v1/sdk_exception||g' "$jsfile"
-  # Statsig client key
-  sed -i 's|client-Bm4HJ0aDjXHQVsoACMREyLNxm5p6zzuzhO50MgtoT5D||g' "$jsfile"
   # Datadog
   sed -i 's|us5\.datadoghq\.com||g' "$jsfile"
-  # Cursor's statsig event proxy
+  # Cursor's statsig event logging proxy (telemetry only, not feature flags)
   sed -i 's|https://api3\.cursor\.sh/tev1/v1||g' "$jsfile"
 done
 

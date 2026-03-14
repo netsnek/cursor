@@ -1,6 +1,6 @@
 Name:           cursor
 Version:        %{cursor_version}
-Release:        7.fc43
+Release:        8.fc43
 Summary:        Cursor AI Code Editor (ARM64)
 License:        Proprietary
 URL:            https://cursor.sh
@@ -25,6 +25,7 @@ echo "  2. After first launch, run: /opt/cursor/share/cursor-web/patch-cursor-we
 echo "  3. Reload the browser"
 
 %files
+%attr(4755, root, root) /opt/cursor/chrome-sandbox
 /opt/cursor
 /usr/bin/cursor
 /usr/bin/cursor-web
