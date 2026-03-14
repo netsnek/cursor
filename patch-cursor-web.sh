@@ -444,6 +444,24 @@ if old in js:
 elif new in js and 'sC_' in js:
     print('  sC_ onboarding already patched')
 
+# 7r. Suppress terminal sandbox AppArmor notification (always fires on Linux >= 6.2 without sandbox helper)
+old = '!this._rawSandboxSupported&&e?.linuxKernelVersion?this._showSandboxUnsupportedNotification(e.linuxKernelVersion)'
+new = '!this._rawSandboxSupported&&e?.linuxKernelVersion?void 0'
+if old in js:
+    js = js.replace(old, new, 1)
+    changed = True
+    print('  sandbox AppArmor notification suppressed')
+elif new in js:
+    print('  sandbox notification already suppressed')
+
+# 7s. Suppress "New update available" notification (auto-update not applicable for serve-web/RPM)
+old = 'minor-version-notification-text>New update available'
+new = 'minor-version-notification-text>New update available" style="display:none'
+if old in js and 'style="display:none' not in js[js.find(old):js.find(old)+200] if old in js else True:
+    js = js.replace(old, new, 1)
+    changed = True
+    print('  update notification suppressed')
+
 if changed:
     open(f, 'w').write(js)
 PATCH_DESKTOP_EOF

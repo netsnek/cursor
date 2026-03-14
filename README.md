@@ -140,14 +140,14 @@ cursor-web [port] [cors-port]
 cursor-web 8080 9080      # defaults
 ```
 
-Then open `http://localhost:8080` in your browser. The full desktop workbench loads with all Cursor AI features:
+Then open the URL shown in the terminal (includes `?cors_port=` parameter). The full desktop workbench loads with all Cursor AI features:
 - **Composer** — multi-file AI editing
 - **Agent mode** — autonomous coding agent
 - **Chat** — AI chat panel
 - **CursorTab** — AI autocomplete
 - **Model selection** — choose between Claude, GPT-4, etc.
 
-Open a specific folder: `http://localhost:8080/?folder=/path/to/project`
+Open a specific folder: `http://localhost:8080/?cors_port=9080&folder=/path/to/project`
 
 Install as a PWA via your browser's "Install" menu for a native app experience.
 
@@ -192,6 +192,8 @@ The patch script (`patch-cursor-web.sh`) applies these modifications to make the
 | 7o. migrate_editor_mode | Disable Statsig gate that forces Agent mode on every load |
 | 7p. Onboarding Ic() | Disable Agent mode force in onboarding callback |
 | 7q. Onboarding render | Skip onboarding walkthrough entirely (forces Agent mode on completion) |
+| 7r. Sandbox notification | Suppress terminal sandbox AppArmor warning (no sandbox helper in serve-web) |
+| 7s. Update notification | Suppress "New update available" banner (auto-update N/A for serve-web/RPM) |
 
 ### Server JS (`server-main.js`)
 | Patch | Description |

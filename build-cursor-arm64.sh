@@ -153,8 +153,9 @@ d['extensionsGallery'] = {
 # Disable telemetry
 d['enableTelemetry'] = False
 d['enabledTelemetryLevels'] = {'error': False, 'usage': False}
-# Keep statsigClientKey — Statsig feature flags are needed for model loading
-# d.pop('statsigClientKey', None)
+# Ensure statsigClientKey is present — Statsig feature flags are needed for model loading
+if 'statsigClientKey' not in d:
+    d['statsigClientKey'] = 'client-Bm4HJ0aDjXHQVsoACMREyLNxm5p6zzuzhO50MgtoT5D'
 d.pop('statsigLogEventProxyUrl', None)  # Disable event logging proxy only
 d.pop('crashReporterId', None)
 d.pop('appInsightsConnectionString', None)

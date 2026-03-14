@@ -21,7 +21,7 @@ fi
 
 echo "==> Starting Cursor Web on port $PORT..."
 echo "    CORS proxy on port $CORS_PORT"
-echo "    Open http://localhost:$PORT in your browser"
+echo "    Open http://localhost:$PORT/?cors_port=$CORS_PORT in your browser"
 echo "    Install as PWA: Browser menu → Install Cursor..."
 echo ""
 

@@ -8,7 +8,7 @@
 // Intercept and route through local proxy.
 {
     const _originalFetch = window.fetch;
-    const PROXY_PORT = 9080;
+    const PROXY_PORT = parseInt(new URLSearchParams(window.location.search).get('cors_port') || '9080', 10);
     // Match Cursor API endpoints + Statsig feature flag domains (CORS-blocked in browser)
     const _cursorApiRe = /https?:\/\/(?:[a-z0-9-]*\.?(?:api[2-5]\.cursor\.sh)|api\.statsigcdn\.com|featureassets\.org|prodregistryv2\.org|statsigapi\.net)/;
     // Rewrite vscode-remote:// URLs to local HTTP resource endpoint
@@ -689,7 +689,7 @@ async function seedAuthTokens() {
     }
     // One-time layout reset: undo damage from migrate_editor_mode migration
     // (now disabled via workbench patch 7o) and prevent onboarding from forcing Agent mode.
-    const _layoutFixVersion = '7';
+    const _layoutFixVersion = '8';
     const _layoutFixKey = _storagePrefix + 'cursorWeb/layoutFixApplied';
     if (localStorage.getItem(_layoutFixKey) !== _layoutFixVersion) {
         // Reset Agent mode hidden flags
