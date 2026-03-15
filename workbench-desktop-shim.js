@@ -2,39 +2,29 @@
  * Cursor Web — desktop workbench in browser with IPC bridge
  *--------------------------------------------------------*/
 
-// === CORS Proxy for Cursor API calls ===
-// The desktop workbench makes fetch/gRPC calls to api[2-5].cursor.sh and
-// various agent subdomains. All are blocked by CORS in the browser.
-// Intercept and route through local proxy.
+// === CORS Proxy — route ALL external fetch through same-origin /cors-proxy/ ===
+// No allowlist. URL: /cors-proxy/HOST/path → https://HOST/path
 {
     const _originalFetch = window.fetch;
-    const PROXY_PORT = parseInt(new URLSearchParams(window.location.search).get('cors_port') || '9080', 10);
-    // Match Cursor API endpoints + Statsig feature flag domains (CORS-blocked in browser)
-    const _cursorApiRe = /https?:\/\/(?:[a-z0-9-]*\.?(?:api[2-5]\.cursor\.sh)|api\.statsigcdn\.com|featureassets\.org|prodregistryv2\.org|statsigapi\.net)/;
-    // Rewrite vscode-remote:// URLs to local HTTP resource endpoint
+    const _externalRe = /^https?:\/\/([^/]+)/;
     const _vsRemoteRe = /^vscode-remote:\/\/[^/]+(\/.*)$/;
     window.fetch = function(input, init) {
         let url = (input instanceof Request) ? input.url : String(input);
-        // Handle vscode-remote:// scheme (extension resources loaded by desktop workbench)
         const rm = url.match(_vsRemoteRe);
         if (rm) {
             const resourcePath = rm[1];
             const rewritten = window.location.origin + '/vscode-remote-resource?path=' + encodeURIComponent(resourcePath);
             input = (input instanceof Request) ? new Request(rewritten, input) : rewritten;
         }
-        const m = url.match(_cursorApiRe);
-        if (m) {
-            const originalHost = m[0].replace(/^https?:\/\//, '');
-            const proxied = url.replace(_cursorApiRe, `http://127.0.0.1:${PROXY_PORT}`);
+        const m = url.match(_externalRe);
+        if (m && !url.startsWith(window.location.origin)) {
+            const targetHost = m[1];
+            const pathStart = url.indexOf('/', url.indexOf('://') + 3);
+            const pathAndQuery = pathStart > 0 ? url.substring(pathStart) : '/';
+            const proxied = window.location.origin + '/cors-proxy/' + targetHost + pathAndQuery;
             if (input instanceof Request) {
-                const newInit = { method: input.method, headers: new Headers(input.headers), body: input.body, mode: 'cors', credentials: input.credentials, redirect: input.redirect, referrer: input.referrer, signal: input.signal };
-                newInit.headers.set('X-Proxy-Host', originalHost);
-                input = new Request(proxied, newInit);
+                input = new Request(proxied, { method: input.method, headers: input.headers, body: input.body, credentials: input.credentials, redirect: input.redirect, referrer: input.referrer, signal: input.signal });
             } else {
-                init = init || {};
-                const headers = new Headers(init.headers || {});
-                headers.set('X-Proxy-Host', originalHost);
-                init = { ...init, headers };
                 input = proxied;
             }
         }
@@ -271,13 +261,9 @@ function handleLocalFilesystem(method, arg) {
             path.endsWith('/cache')) {
             return { type: 2, ctime: Date.now(), mtime: Date.now(), size: 0 };
         }
-        // Paths under .cursor/ — return dir stat for dirs, file stat for files
-        if (isUnderCursor) {
-            if (hasExtension) {
-                // Files under .cursor (logs, config, db) — return empty file stat
-                return { type: 1, ctime: Date.now(), mtime: Date.now(), size: 0 };
-            }
-            // Subdirectories
+        // Paths under .cursor/ — only pretend subdirectories exist.
+        // Files should be FileNotFound so createFile can create them.
+        if (isUnderCursor && !hasExtension) {
             return { type: 2, ctime: Date.now(), mtime: Date.now(), size: 0 };
         }
         // Everything else: not found

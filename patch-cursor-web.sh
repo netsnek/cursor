@@ -126,11 +126,19 @@ WB_HTML="$SERVDIR/out/vs/code/browser/workbench/workbench.html"
 python3 -c "
 html = open('$WB_HTML').read()
 
-# Replace web CSS with desktop CSS
+# Add desktop CSS (contains Tailwind v4 runtime + Cursor-specific styles)
+# The HTML has workbench.css (not workbench.web.main.css), so replace doesn't work.
+# Instead, add a second <link> for the desktop CSS.
 html = html.replace(
     'workbench/workbench.web.main.css',
     'workbench/workbench.desktop.main.css'
 )
+desktop_css_link = '<link rel=\"stylesheet\" href=\"{{WORKBENCH_WEB_BASE_URL}}/out/vs/workbench/workbench.desktop.main.css\">'
+if 'workbench.desktop.main.css' not in html:
+    html = html.replace(
+        '</head>',
+        '\t' + desktop_css_link + '\n\t</head>'
+    )
 
 # Replace web workbench loader with desktop shim
 html = html.replace(
@@ -462,6 +470,9 @@ if old in js and 'style="display:none' not in js[js.find(old):js.find(old)+200] 
     changed = True
     print('  update notification suppressed')
 
+# 7t. Keep default Editor layout
+# (no change needed — M0.Editor is already the default)
+
 if changed:
     open(f, 'w').write(js)
 PATCH_DESKTOP_EOF
@@ -495,14 +506,12 @@ import sys
 f = sys.argv[1]
 js = open(f).read()
 
-# 8a. CSP connect-src: add CORS proxy origin
+# 8a. CSP connect-src: same-origin proxy, no external origin needed
 old = "connect-src 'self' ws: wss: https:;"
-new = "connect-src 'self' ws: wss: https: http://127.0.0.1:9080;"
 if old in js:
-    js = js.replace(old, new, 1)
-    print('  connect-src: added CORS proxy origin')
-elif new in js:
-    print('  connect-src: already patched')
+    print('  connect-src: already allows https: (no change needed)')
+elif 'connect-src' in js:
+    print('  connect-src: non-standard, skipping')
 
 # 8b. CSP font-src: add vscode-remote-resource
 old = "font-src 'self' blob:;"
@@ -532,14 +541,31 @@ if old in js:
 elif 'o="1.105.1";let r=ZS' in js:
     print('  U0() already patched')
 
-# 8e. MIME type: add .wasm for WebAssembly
+# 8e. MIME types: add .wasm, .ttf, .woff2
 old = '".woff":"application/font-woff"'
-new = '".wasm":"application/wasm",".woff":"application/font-woff"'
+new = '".wasm":"application/wasm",".ttf":"font/ttf",".woff":"application/font-woff",".woff2":"font/woff2"'
 if old in js and '".wasm"' not in js:
     js = js.replace(old, new, 1)
-    print('  MIME: added .wasm')
-elif '".wasm"' in js:
-    print('  MIME: .wasm already present')
+    print('  MIME: added .wasm, .ttf, .woff2')
+elif '".wasm"' in js and '".ttf"' not in js:
+    old2 = '".wasm":"application/wasm",".woff":"application/font-woff"'
+    new2 = '".wasm":"application/wasm",".ttf":"font/ttf",".woff":"application/font-woff",".woff2":"font/woff2"'
+    if old2 in js:
+        js = js.replace(old2, new2, 1)
+        print('  MIME: added .ttf, .woff2')
+elif '".ttf"' in js:
+    print('  MIME: .ttf/.woff2 already present')
+
+# 8f0. Inject /cors-proxy/ route into server request handler (same-origin, no allowlist)
+# URL format: /cors-proxy/<target-host>/path → https://<target-host>/path
+# Must go BEFORE the GET-only method check since API calls use POST.
+old = 'handleRequest(e,n){if(e.method!=="GET")'
+cors_route = r'''handleRequest(e,n){let _u=new URL(e.url||"/",`http://${e.headers.host}`),_p=_u.pathname;if(this._serverBasePath!==void 0&&_p.startsWith(this._serverBasePath)){_p=_p.substring(this._serverBasePath.length);if(_p[0]!=="/")_p="/"+_p}if(_p.startsWith("/cors-proxy/")){const _cp=_p.substring(12),_si=_cp.indexOf("/"),_host=_si>0?_cp.substring(0,_si):_cp,_path=_si>0?_cp.substring(_si):"/";if(e.method==="OPTIONS"){n.writeHead(200,{"access-control-allow-origin":"*","access-control-allow-methods":"GET, POST, PUT, DELETE, OPTIONS","access-control-allow-headers":"*","access-control-max-age":"86400"});n.end();return}const _https=yH("https"),_chunks=[];e.on("data",_c=>_chunks.push(_c));e.on("end",()=>{const _body=Buffer.concat(_chunks),_fh={...e.headers};delete _fh["host"];delete _fh["origin"];delete _fh["referer"];delete _fh["connection"];delete _fh["accept-encoding"];_fh["host"]=_host;const _opts={hostname:_host,port:443,path:_path+(_u.search||""),method:e.method,headers:_fh},_pr=_https.request(_opts,_res=>{const _rh={..._res.headers};_rh["access-control-allow-origin"]="*";_rh["access-control-expose-headers"]="*";delete _rh["access-control-allow-credentials"];n.writeHead(_res.statusCode,_rh);_res.pipe(n)});_pr.on("error",_e=>{n.writeHead(502,{"Content-Type":"text/plain"});n.end("Proxy error: "+_e.message)});if(_body.length>0)_pr.write(_body);_pr.end()});return}if(e.method!=="GET")'''
+if old in js and '/cors-proxy/' not in js:
+    js = js.replace(old, cors_route, 1)
+    print('  CORS proxy route injected at /cors-proxy/')
+elif '/cors-proxy/' in js:
+    print('  CORS proxy route already present')
 
 open(f, 'w').write(js)
 PATCH_SERVER_EOF
